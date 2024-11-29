@@ -1,3 +1,5 @@
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from langchain_ollama import OllamaLLM
 from langchain_community.document_loaders import TextLoader
 from langchain.text_splitter import CharacterTextSplitter
@@ -5,9 +7,7 @@ from langchain.prompts import PromptTemplate
 from langchain.chains import RetrievalQA
 from langchain_community.embeddings import OllamaEmbeddings
 from langchain_community.vectorstores import FAISS
-from rich.console import Console
 
-console = Console()
 
 VALID_EGOS = [
     "Ego del Poderoso", "Ego del Ganador", "Ego del Sabio", "Ego del Popular",
@@ -15,11 +15,20 @@ VALID_EGOS = [
     "Ego del Tonto", "Ego del Intimidado", "Ego del Engañado", "Ego de la Víctima"
 ]
 
+# Initialize FastAPI app
+app = FastAPI()
+
+# Setup variables
+qa_chain = None
+vectorstore = None
+
+
 def validate_response(response):
     for ego in VALID_EGOS:
         if ego.lower() in response.lower():
             return True
     return False
+
 
 def search_scriptures(question, vectorstore):
     retriever = vectorstore.as_retriever(search_kwargs={"k": 1})
@@ -27,6 +36,7 @@ def search_scriptures(question, vectorstore):
     if result:
         return result[0].page_content
     return None
+
 
 def setup_rag():
     try:
@@ -37,19 +47,17 @@ def setup_rag():
         embeddings = OllamaEmbeddings(model="llama3.2")
         vectorstore = FAISS.from_documents(chunks, embeddings)
         
-        llm = OllamaLLM(model="llama3.2", temperature=0.7, top_p=0.9, top_k=100)
+        llm = OllamaLLM(model="llama3.2", temperature=0.7, top_p=0.8, top_k=100,num_predict=100)
 
         prompt_template = """
         Eres un consejero bíblico cálido y empático basado en el texto 'La Auténtica Felicidad'.
         Tu tarea es identificar los egos dominantes en las preguntas y guiar con una respuesta breve y cálida. 
-        Usa solo la sabiduría contenida en el texto y asegúrate de mencionar solo egos explícitamente listados en el contenido.
 
-        ### INSTRUCCIONES:
-        1. Identifica el ego dominante basado en la descripción en el texto.
-        3. Responde con calidez, explicando el ego y ofreciendo orientación en máximo **2-3 oraciones.**
-        4. Usa únicamente los egos mencionados en el texto proporcionado.
-        5. No sugieras nada , solo enfoque en la reflexión y orientación.
-        6. Responde de manera natural, no señales que identificaste el ego , ni coloques en tu respuesta respuesta con calidez, solo responde.
+        ### Instrucciones:
+        1. Responde en un máximo de 2-3 oraciones.
+        2. Identifica claramente el ego dominante.
+        3. Ofrece orientación breve, usando solo información relevante del texto.
+
 
         ### EJEMPLOS:
         Pregunta: "Odio a mis compañeros porque siempre tienen más éxito que yo."
@@ -77,46 +85,36 @@ def setup_rag():
         )
         return qa_chain, vectorstore
     except Exception as e:
-        console.print(f"[bold red]Error configurando RAG:[/bold red] {str(e)}")
-        raise
+        raise RuntimeError(f"Error configurando RAG: {str(e)}")
 
-def main():
-    try:
-        console.print("\nEspacio de Apoyo y Reflexión")
-        console.print("Estoy aquí para escucharte y caminar juntos...\n")
-        
-        qa_chain, vectorstore = setup_rag()
-        
-        while True:
-            question = console.input("\n¿Qué te preocupa hoy? (escribe 'salir' para terminar): ")
-            
-            if question.lower() == 'salir':
-                break
-                
-            console.print(f"\nTú: {question}")
-            result = qa_chain({"query": question})
-            response = result['result']
-   
-            if "Respuesta:" in response:
-                response = response.split("Respuesta:", 1)[1].strip()
-            
-            if validate_response(response):
-                console.print(f"Reflexión: {response}")
-            else:
-                console.print("[bold yellow]No se detectó un ego válido en la respuesta.[/bold yellow]")
-                verse = search_scriptures(question, vectorstore)
-                if verse:
-                    console.print(f"Reflexión basada en las Escrituras: {verse}")
-                else:
-                    console.print("No se encontró un versículo relacionado. Intenta con otra pregunta.")
-            
-            console.print("─" * 60 + "\n")
-            
-    except KeyboardInterrupt:
-        console.print("\n\nGracias por compartir. ¡Hasta pronto!")
-    except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {str(e)}")
 
-if __name__ == "__main__":
-    main()
+class Query(BaseModel):
+    question: str
 
+
+@app.on_event("startup")
+async def startup_event():
+    global qa_chain, vectorstore
+    qa_chain, vectorstore = setup_rag()
+
+
+@app.post("/chat")
+async def chat_endpoint(query: Query):
+    global qa_chain, vectorstore
+    question = query.question
+
+    if not question.strip():
+        raise HTTPException(status_code=400, detail="La pregunta no puede estar vacía.")
+    
+    result = qa_chain({"query": question})
+    response = result["result"]
+
+
+    if validate_response(response):
+        return {"reflection": response}
+    else:
+        verse = search_scriptures(question, vectorstore)
+        if verse:
+            return {"reflection": verse}
+        else:
+            return {"reflection": "No se encontró un versículo relacionado. Intenta con otra pregunta."}

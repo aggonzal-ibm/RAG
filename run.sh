@@ -34,11 +34,12 @@ fi
 
 # Verificar modelo
 if ! ollama list | grep -q "$MODEL"; then
-    echo -e "${YELLOW}Descargando modelo tinyllama...${NC}"
+    echo -e "${YELLOW}Descargando modelo ${MODEL}...${NC}"
     ollama pull $MODEL
 fi
 
 echo -e "${GREEN}Iniciando aplicación...${NC}"
 
-# Ejecutar la aplicación
-python app/main.py
+# Iniciar el servidor FastAPI
+uvicorn app.main:app --host 0.0.0.0 --port 8000
+
